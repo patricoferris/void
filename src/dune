@@ -1,0 +1,12 @@
+(rule
+ (targets config.ml)
+ (action
+  (run ./include/discover.exe)))
+
+(library
+ (name void)
+ (public_name void)
+ (foreign_stubs
+  (language c)
+  (names void_action))
+ (libraries eio_linux eio.unix))
