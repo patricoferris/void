@@ -26,6 +26,10 @@ module Mount : sig
   end
 end
 
+val pivot_root : string -> Eio_unix.Private.Fork_action.t
+(** [pivot_root new_root] pivots the root of the forked child,
+    unmount and removing the original root *)
+
 val mount :
   src:string ->
   target:string ->

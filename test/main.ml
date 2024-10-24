@@ -1,7 +1,7 @@
 open Eio.Std
 
 let rootfs =
-  "/obuilder-zfs/result/641b9776730f42ea27bb06bdf5a59a3a0da54e7642b74f497323739b3ab3e55e/rootfs"
+  "/obuilder-zfs/result/fe532e693c6a86db16b50547aae1345b3515c727b8ed668b3e0c33c1e9a895f9/rootfs"
 
 let () =
   Eio_linux.run @@ fun _env ->
@@ -10,10 +10,10 @@ let () =
   let t =
     Void.spawn ~sw
       [
-        mount ~src:rootfs ~target:"/tmp/void-fs" Mount.Types.auto
-          Mount.Flags.ms_bind;
+        pivot_root rootfs;
+        Eio_linux.Low_level.Process.Fork_action.chdir "/";
         Eio_linux.Low_level.Process.Fork_action.execve "/bin/ls" ~env:[||]
-          ~argv:[| "/bin/ls"; "/tmp/void-fs" |];
+          ~argv:[| "/bin/ls"; "-la"; "/home" |];
       ]
   in
   match Promise.await (Void.exit_status t) with

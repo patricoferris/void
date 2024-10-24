@@ -31,6 +31,14 @@ let mount ~src ~target type_ flags =
   Fork_action.
     { run = (fun k -> k (Obj.repr (action_mount, src, target, type_, flags))) }
 
+external action_pivot_root : unit -> Fork_action.fork_fn
+  = "void_fork_pivot_root"
+
+let action_pivot_root = action_pivot_root ()
+
+let pivot_root new_root =
+  Fork_action.{ run = (fun k -> k (Obj.repr (action_pivot_root, new_root))) }
+
 module Flags = struct
   include Config.Clone_flags
 
@@ -73,6 +81,8 @@ let rec waitpid pid =
       status
   | exception Unix.Unix_error (EINTR, _, _) -> waitpid pid
 
+let void_flags = Flags.(clone_pidfd + clone_newns + clone_newnet)
+
 let spawn ~sw actions =
   Switch.run ~name:"spawn_pipe" @@ fun pipe_sw ->
   let errors_r, errors_w = Eio_linux.Low_level.pipe ~sw:pipe_sw in
@@ -83,7 +93,7 @@ let spawn ~sw actions =
     Fd.use_exn "errors-w" errors_w @@ fun errors_w ->
     let pid, pid_fd =
       Eio.Private.Trace.with_span "spawn" @@ fun () ->
-      eio_spawn errors_w Flags.(clone_pidfd + clone_newns) c_actions
+      eio_spawn errors_w void_flags c_actions
     in
     let pid_fd = Fd.of_unix ~sw ~seekable:false ~close_unix:true pid_fd in
     { pid; pid_fd; exit_status }

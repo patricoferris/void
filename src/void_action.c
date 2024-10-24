@@ -91,13 +91,74 @@ static void action_mount(int errors, value v_config) {
   value v_tgt = Field(v_config, 2);
   value v_type = Field(v_config, 3);
   value v_flags = Field(v_config, 4);
+
+  int r;
   
-  mount(String_val(v_src), String_val(v_tgt), String_val(v_type), Int_val(v_flags), NULL);
-  eio_unix_fork_error(errors, "mount", strerror(errno));
-  _exit(1);
+  r = mount(String_val(v_src), String_val(v_tgt), String_val(v_type), Int_val(v_flags), NULL);
+  
+  if (r != 0) {
+    eio_unix_fork_error(errors, "mount", strerror(errno));
+    _exit(1);
+  }
 }
 
 CAMLprim value void_fork_mount(value v_unit) {
   return Val_fork_fn(action_mount);
+}
+
+// PIVOT ROOT
+//
+static int pivot_root(const char *new_root, const char *put_old) {
+  return syscall(SYS_pivot_root, new_root, put_old);
+}
+// The calling function must ensure:
+//   - old_root is created inside 
+static void action_pivot_root(int errors, value v_config) {
+  char path[PATH_MAX];
+  value v_new_root = Field(v_config, 1);
+  const char *old_root = "old_root";
+
+  const char *new_root = String_val(v_new_root);
+
+  // From pivot_root example: We want to change the propagation type
+  // of root to be private so we can pivot it.
+  if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-private", strerror(errno));
+	_exit(1);
+  }
+
+  // From pivot_root example: we check that new_root is indeed a mountpoint 
+  if (mount(new_root, new_root, NULL, MS_BIND, NULL) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-new_root", strerror(errno));
+    _exit(1);
+  }
+
+   // Create the old_root path 
+   snprintf(path, sizeof(path), "%s/%s", new_root, old_root);
+   if (mkdir(path, 0777) == -1) {
+     eio_unix_fork_error(errors, "pivot_root-path", strerror(errno));
+	 _exit(1);
+   }
+
+  // Pivot the root! 
+  if (pivot_root(new_root, path)) {
+    eio_unix_fork_error(errors, "pivot_root", strerror(errno));
+	_exit(1);
+  }
+
+  // Unmount the old root and remove it
+  if (umount2(put_old, MNT_DETACH) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-detach", strerror(errno));
+	_exit(1);
+  }
+
+  if (rmdir(put_old) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-rmdir", strerror(errno));
+	_exit(1);
+  }
+}
+
+CAMLprim value void_fork_pivot_root(value v_unit) {
+  return Val_fork_fn(action_pivot_root);
 }
 
