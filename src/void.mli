@@ -26,21 +26,40 @@ module Mount : sig
   end
 end
 
-val pivot_root : string -> Eio_unix.Private.Fork_action.t
-(** [pivot_root new_root] pivots the root of the forked child,
-    unmount and removing the original root *)
-
-val mount :
-  src:string ->
-  target:string ->
-  Mount.Types.t ->
-  Mount.Flags.t ->
-  Eio_unix.Private.Fork_action.t
-(** Mount fork action *)
-
 type t
 (** A void process *)
 
-val spawn : sw:Eio.Switch.t -> Eio_unix.Private.Fork_action.t list -> t
+type empty = [ `Empty ]
+(** An empty void is exactly that, nothingness *)
+
+type partial = [ `Partial ]
+(** A partial void is constructed from an empty or partial void,
+    adding mounts, networking, time etc. *)
+
+type executable = [ `Executable ]
+(** An executable void is one that is ready to be spawned *)
+
+type _ void
+(** A configuration for a Void process *)
+
+val empty : empty void
+(** The empty void *)
+
+val mount : string -> [< empty | partial ] void -> partial void
+(** Add a mount point *)
+
+val rootfs : string -> [< empty | partial ] void -> partial void
+(** Add a new root filesystem *)
+
+val exec : string list -> [< empty | partial ] void -> executable void
+(** Make a void configuration ready to be spawned *)
+
+val spawn : sw:Eio.Switch.t -> executable void -> t
+(** Spawn an executable void process *)
+
 val pid : t -> int
+(** The pid of a running void process *)
+
 val exit_status : t -> Unix.process_status Eio.Promise.t
+
+val exit_status_to_string : Unix.process_status -> string

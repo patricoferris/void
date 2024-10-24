@@ -27,7 +27,7 @@ external action_mount : unit -> Fork_action.fork_fn = "void_fork_mount"
 
 let action_mount = action_mount ()
 
-let mount ~src ~target type_ flags =
+let mount ~(src : string) ~(target : string) (type_ : Mount.Types.t) (flags : Mount.Flags.t) =
   Fork_action.
     { run = (fun k -> k (Obj.repr (action_mount, src, target, type_, flags))) }
 
@@ -36,7 +36,7 @@ external action_pivot_root : unit -> Fork_action.fork_fn
 
 let action_pivot_root = action_pivot_root ()
 
-let pivot_root new_root =
+let pivot_root (new_root : string) =
   Fork_action.{ run = (fun k -> k (Obj.repr (action_pivot_root, new_root))) }
 
 module Flags = struct
@@ -83,10 +83,49 @@ let rec waitpid pid =
 
 let void_flags = Flags.(clone_pidfd + clone_newns + clone_newnet)
 
-let spawn ~sw actions =
+type empty = [ `Empty ]
+type partial = [ `Partial ]
+type executable = [ `Executable ]
+
+type config = {
+  root : string option;
+  mounts : string list;
+}
+
+let default_config = { root = None; mounts = [] }
+
+type 'a void =
+  | Empty : [> empty] void
+  | Partial : config -> [> partial] void
+  | Executable : (string * string list) * config -> [> executable ] void
+
+let empty = Empty
+
+let rootfs : string -> [ empty | partial ] void -> partial void = fun s v -> match v with
+  | Empty -> Partial ({ root = Some s; mounts = [] })
+  | Partial c -> Partial ({ c with root = Some s })
+
+let mount : string -> [ empty | partial ] void -> partial void = fun s v -> match (v :> [ empty | partial] void) with
+  | Empty -> Partial { default_config with mounts = [ s ] }
+  | Partial c -> Partial { c with mounts = s :: c.mounts }
+
+let exec : string list -> [ empty | partial ] void -> executable void = fun s v -> match v with
+  | Empty -> Executable ((List.hd s, s), default_config)
+  | Partial c -> Executable ((List.hd s, s), c)
+
+let actions (Executable ((e, args), c) : executable void) : Fork_action.t list =
+  let mounts = [] in
+  let root = match c.root with
+    | None -> pivot_root "tmpfs!"
+    | Some root -> pivot_root root
+  in
+  let e = Process.Fork_action.execve e ~env:[||] ~argv:(Array.of_list args) in
+  mounts @ [ root; e ]
+
+let spawn ~sw (e : executable void) =
   Switch.run ~name:"spawn_pipe" @@ fun pipe_sw ->
   let errors_r, errors_w = Eio_linux.Low_level.pipe ~sw:pipe_sw in
-  Eio_unix.Private.Fork_action.with_actions actions @@ fun c_actions ->
+  Eio_unix.Private.Fork_action.with_actions (actions e) @@ fun c_actions ->
   Switch.check sw;
   let exit_status, set_exit_status = Promise.create () in
   let t =
@@ -116,3 +155,8 @@ let spawn ~sw actions =
   match read_response errors_r with
   | "" -> t (* Success! Execing the child closed [errors_w] and we got EOF. *)
   | err -> failwith err
+
+let exit_status_to_string = function
+  | Unix.WEXITED n -> Printf.sprintf "Exited with %i" n
+  | Unix.WSTOPPED n -> Printf.sprintf "Stopped with %i" n
+  | Unix.WSIGNALED n -> Printf.sprintf "Signalled with %i" n
