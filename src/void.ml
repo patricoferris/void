@@ -27,7 +27,8 @@ external action_mount : unit -> Fork_action.fork_fn = "void_fork_mount"
 
 let action_mount = action_mount ()
 
-let mount ~(src : string) ~(target : string) (type_ : Mount.Types.t) (flags : Mount.Flags.t) =
+let mount ~(src : string) ~(target : string) (type_ : Mount.Types.t)
+    (flags : Mount.Flags.t) =
   Fork_action.
     { run = (fun k -> k (Obj.repr (action_mount, src, target, type_, flags))) }
 
@@ -83,46 +84,41 @@ let rec waitpid pid =
 
 let void_flags = Flags.(clone_pidfd + clone_newns + clone_newnet)
 
-type empty = [ `Empty ]
-type partial = [ `Partial ]
-type executable = [ `Executable ]
+type path = string
+type mode = R | RW
 
-type config = {
-  root : string option;
-  mounts : string list;
+type void = {
+  args : string list;
+  rootfs : (string * mode) option;
+  mounts : mount list;
 }
 
-let default_config = { root = None; mounts = [] }
+and mount = { src : string; tgt : string; mode : mode }
 
-type 'a void =
-  | Empty : [> empty] void
-  | Partial : config -> [> partial] void
-  | Executable : (string * string list) * config -> [> executable ] void
+let empty = { args = []; rootfs = None; mounts = [] }
 
-let empty = Empty
-
-let rootfs : string -> [ empty | partial ] void -> partial void = fun s v -> match v with
-  | Empty -> Partial ({ root = Some s; mounts = [] })
-  | Partial c -> Partial ({ c with root = Some s })
-
-let mount : string -> [ empty | partial ] void -> partial void = fun s v -> match (v :> [ empty | partial] void) with
-  | Empty -> Partial { default_config with mounts = [ s ] }
-  | Partial c -> Partial { c with mounts = s :: c.mounts }
-
-let exec : string list -> [ empty | partial ] void -> executable void = fun s v -> match v with
-  | Empty -> Executable ((List.hd s, s), default_config)
-  | Partial c -> Executable ((List.hd s, s), c)
-
-let actions (Executable ((e, args), c) : executable void) : Fork_action.t list =
-  let mounts = [] in
-  let root = match c.root with
-    | None -> pivot_root "tmpfs!"
-    | Some root -> pivot_root root
+let actions v : Fork_action.t list =
+  let mounts =
+    List.map
+      (fun { src; tgt; mode = _ } ->
+        mount ~src ~target:tgt Mount.Types.auto Mount.Flags.ms_bind)
+      v.mounts
   in
-  let e = Process.Fork_action.execve e ~env:[||] ~argv:(Array.of_list args) in
-  mounts @ [ root; e ]
+  let root, _mode =
+    match v.rootfs with None -> failwith "TMPFS" | Some (s, m) -> (s, m)
+  in
+  let args = match v.args with [] -> failwith "No exec" | args -> args in
+  let e =
+    Process.Fork_action.execve (List.hd args) ~env:[||]
+      ~argv:(Array.of_list args)
+  in
+  mounts @ [ pivot_root root; e ]
 
-let spawn ~sw (e : executable void) =
+let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
+let exec args v = { v with args }
+let mount ~mode ~src ~tgt v = { v with mounts = { src; tgt; mode } :: v.mounts }
+
+let spawn ~sw e =
   Switch.run ~name:"spawn_pipe" @@ fun pipe_sw ->
   let errors_r, errors_w = Eio_linux.Low_level.pipe ~sw:pipe_sw in
   Eio_unix.Private.Fork_action.with_actions (actions e) @@ fun c_actions ->

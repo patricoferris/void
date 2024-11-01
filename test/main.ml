@@ -7,9 +7,9 @@ let () =
   Eio_linux.run @@ fun _env ->
   Switch.run @@ fun sw ->
   let open Void in
-  let void = 
+  let void =
     empty
-    |> rootfs root_filesystem
+    |> rootfs ~mode:R root_filesystem
     |> exec [ "/bin/ls"; "-la"; "/home" ]
   in
   let t = Void.spawn ~sw void in
