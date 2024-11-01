@@ -8,11 +8,15 @@ let () =
           C.C_define.Type.
             [
               (* Clone3 Flags *)
-              ("CLONE_NEWNS", Int);
               ("CLONE_PIDFD", Int);
               ("CLONE_NEWPID", Int);
               ("CLONE_NEWCGROUP", Int);
+              ("CLONE_NEWNS", Int);
+              ("CLONE_NEWIPC", Int);
               ("CLONE_NEWNET", Int);
+              ("CLONE_NEWTIME", Int);
+              ("CLONE_NEWUSER", Int);
+              ("CLONE_NEWUTS", Int);
               (* Mount Flags *)
               ("MS_REMOUNT", Int);
               ("MS_BIND", Int);
@@ -34,6 +38,9 @@ let () =
       let structs vs =
         List.map (fun (name, v) -> Printf.sprintf "  let %s = 0x%x" name v) vs
       in
+      let flags_nspace =
+        List.filter (String.starts_with ~prefix:"clone_new") (List.map fst defs)
+      in
       let mount =
         [ "module Mount_flags : sig"; "  type t = int" ]
         @ sigs mount_flags
@@ -42,6 +49,8 @@ let () =
       in
       C.Flags.write_lines "config.ml"
         ([ "module Clone_flags : sig"; "  type t = int" ]
-        @ sigs defs
+        @ sigs defs @ [ "val all : t list" ]
         @ [ "end = struct"; "  type t = int" ]
-        @ structs defs @ [ "end" ] @ mount))
+        @ structs defs
+        @ [ "let all = [" ^ String.concat ";" flags_nspace ^ "]" ]
+        @ [ "end" ] @ mount))

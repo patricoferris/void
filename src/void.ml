@@ -6,7 +6,6 @@ module Rcfd = Eio_unix.Private.Rcfd
 module Fork_action = Eio_unix.Private.Fork_action
 
 (* Actions for namespacing *)
-
 module Mount = struct
   module Flags = struct
     include Config.Mount_flags
@@ -82,7 +81,7 @@ let rec waitpid pid =
       status
   | exception Unix.Unix_error (EINTR, _, _) -> waitpid pid
 
-let void_flags = Flags.(clone_pidfd + clone_newns + clone_newnet)
+let void_flags = List.fold_left Flags.( + ) 0 Flags.all
 
 type path = string
 type mode = R | RW
@@ -128,7 +127,8 @@ let spawn ~sw e =
     Fd.use_exn "errors-w" errors_w @@ fun errors_w ->
     let pid, pid_fd =
       Eio.Private.Trace.with_span "spawn" @@ fun () ->
-      eio_spawn errors_w void_flags c_actions
+      let flags = Flags.(clone_pidfd + void_flags) in
+      eio_spawn errors_w flags c_actions
     in
     let pid_fd = Fd.of_unix ~sw ~seekable:false ~close_unix:true pid_fd in
     { pid; pid_fd; exit_status }

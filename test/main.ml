@@ -10,7 +10,7 @@ let () =
   let void =
     empty
     |> rootfs ~mode:R root_filesystem
-    |> exec [ "/bin/ls"; "-la"; "/home" ]
+    |> exec [ "/usr/bin/curl"; "https//ryan.freumh.org" ]
   in
   let t = Void.spawn ~sw void in
   match Promise.await (Void.exit_status t) with
