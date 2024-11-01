@@ -27,7 +27,8 @@ external action_mount : unit -> Fork_action.fork_fn = "void_fork_mount"
 
 let action_mount = action_mount ()
 
-let mount ~src ~target type_ flags =
+let mount ~(src : string) ~(target : string) (type_ : Mount.Types.t)
+    (flags : Mount.Flags.t) =
   Fork_action.
     { run = (fun k -> k (Obj.repr (action_mount, src, target, type_, flags))) }
 
@@ -36,7 +37,7 @@ external action_pivot_root : unit -> Fork_action.fork_fn
 
 let action_pivot_root = action_pivot_root ()
 
-let pivot_root new_root =
+let pivot_root (new_root : string) =
   Fork_action.{ run = (fun k -> k (Obj.repr (action_pivot_root, new_root))) }
 
 module Flags = struct
@@ -83,10 +84,44 @@ let rec waitpid pid =
 
 let void_flags = Flags.(clone_pidfd + clone_newns + clone_newnet)
 
-let spawn ~sw actions =
+type path = string
+type mode = R | RW
+
+type void = {
+  args : string list;
+  rootfs : (string * mode) option;
+  mounts : mount list;
+}
+
+and mount = { src : string; tgt : string; mode : mode }
+
+let empty = { args = []; rootfs = None; mounts = [] }
+
+let actions v : Fork_action.t list =
+  let mounts =
+    List.map
+      (fun { src; tgt; mode = _ } ->
+        mount ~src ~target:tgt Mount.Types.auto Mount.Flags.ms_bind)
+      v.mounts
+  in
+  let root, _mode =
+    match v.rootfs with None -> failwith "TMPFS" | Some (s, m) -> (s, m)
+  in
+  let args = match v.args with [] -> failwith "No exec" | args -> args in
+  let e =
+    Process.Fork_action.execve (List.hd args) ~env:[||]
+      ~argv:(Array.of_list args)
+  in
+  mounts @ [ pivot_root root; e ]
+
+let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
+let exec args v = { v with args }
+let mount ~mode ~src ~tgt v = { v with mounts = { src; tgt; mode } :: v.mounts }
+
+let spawn ~sw e =
   Switch.run ~name:"spawn_pipe" @@ fun pipe_sw ->
   let errors_r, errors_w = Eio_linux.Low_level.pipe ~sw:pipe_sw in
-  Eio_unix.Private.Fork_action.with_actions actions @@ fun c_actions ->
+  Eio_unix.Private.Fork_action.with_actions (actions e) @@ fun c_actions ->
   Switch.check sw;
   let exit_status, set_exit_status = Promise.create () in
   let t =
@@ -116,3 +151,8 @@ let spawn ~sw actions =
   match read_response errors_r with
   | "" -> t (* Success! Execing the child closed [errors_w] and we got EOF. *)
   | err -> failwith err
+
+let exit_status_to_string = function
+  | Unix.WEXITED n -> Printf.sprintf "Exited with %i" n
+  | Unix.WSTOPPED n -> Printf.sprintf "Stopped with %i" n
+  | Unix.WSIGNALED n -> Printf.sprintf "Signalled with %i" n

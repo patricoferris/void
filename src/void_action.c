@@ -116,7 +116,7 @@ static int pivot_root(const char *new_root, const char *put_old) {
 static void action_pivot_root(int errors, value v_config) {
   char path[PATH_MAX];
   value v_new_root = Field(v_config, 1);
-  const char *old_root = "old_root";
+  const char *old_root = "/old_root";
 
   const char *new_root = String_val(v_new_root);
 
@@ -147,12 +147,12 @@ static void action_pivot_root(int errors, value v_config) {
   }
 
   // Unmount the old root and remove it
-  if (umount2(put_old, MNT_DETACH) == -1) {
+  if (umount2(old_root, MNT_DETACH) == -1) {
     eio_unix_fork_error(errors, "pivot_root-detach", strerror(errno));
 	_exit(1);
   }
 
-  if (rmdir(put_old) == -1) {
+  if (rmdir(old_root) == -1) {
     eio_unix_fork_error(errors, "pivot_root-rmdir", strerror(errno));
 	_exit(1);
   }

@@ -26,21 +26,33 @@ module Mount : sig
   end
 end
 
-val pivot_root : string -> Eio_unix.Private.Fork_action.t
-(** [pivot_root new_root] pivots the root of the forked child,
-    unmount and removing the original root *)
-
-val mount :
-  src:string ->
-  target:string ->
-  Mount.Types.t ->
-  Mount.Flags.t ->
-  Eio_unix.Private.Fork_action.t
-(** Mount fork action *)
-
 type t
 (** A void process *)
 
-val spawn : sw:Eio.Switch.t -> Eio_unix.Private.Fork_action.t list -> t
+type path = string
+(** File paths *)
+
+type mode = R | RW
+
+type void
+(** A configuration for a void process *)
+
+val empty : void
+(** The empty void *)
+
+val rootfs : mode:mode -> path -> void -> void
+(** Add a new root filesystem *)
+
+val mount : mode:mode -> src:path -> tgt:path -> void -> void
+
+val exec : string list -> void -> void
+(** Make a void configuration ready to be spawned *)
+
+val spawn : sw:Eio.Switch.t -> void -> t
+(** Spawn a void process *)
+
 val pid : t -> int
+(** The pid of a running void process *)
+
 val exit_status : t -> Unix.process_status Eio.Promise.t
+val exit_status_to_string : Unix.process_status -> string
