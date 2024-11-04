@@ -116,7 +116,8 @@ static int pivot_root(const char *new_root, const char *put_old) {
 static void action_pivot_root(int errors, value v_config) {
   char path[PATH_MAX];
   value v_new_root = Field(v_config, 1);
-  const char *old_root = "/old_root";
+  value v_mount_as_tmpfs = Field(v_config, 2);
+  const char *old_root = "old_root/";
 
   const char *new_root = String_val(v_new_root);
 
@@ -124,7 +125,20 @@ static void action_pivot_root(int errors, value v_config) {
   // of root to be private so we can pivot it.
   if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
     eio_unix_fork_error(errors, "pivot_root-private", strerror(errno));
-	_exit(1);
+    _exit(1);
+  }
+
+  // If no pivot_root was given, then we tmpfs the tmpdir we assume was passed.
+  if (Val_bool(v_mount_as_tmpfs)) {
+    if (mkdir(new_root, 0777) == -1) {
+      eio_unix_fork_error(errors, path, strerror(errno));
+      _exit(1);
+    }
+
+    if (mount("tmpfs", new_root, "tmpfs", 0, NULL) == -1) {
+      eio_unix_fork_error(errors, "pivot_root-tmpfs", strerror(errno));
+      _exit(1);
+    }
   }
 
   // From pivot_root example: we check that new_root is indeed a mountpoint 
@@ -133,12 +147,12 @@ static void action_pivot_root(int errors, value v_config) {
     _exit(1);
   }
 
-   // Create the old_root path 
-   snprintf(path, sizeof(path), "%s/%s", new_root, old_root);
-   if (mkdir(path, 0777) == -1) {
-     eio_unix_fork_error(errors, "pivot_root-path", strerror(errno));
-	 _exit(1);
-   }
+  // Create the old_root path 
+  snprintf(path, sizeof(path), "%s/%s", new_root, old_root);
+  if (mkdir(path, 0777) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-mkdir", strerror(errno));
+    _exit(1);
+  }
 
   // Pivot the root! 
   if (pivot_root(new_root, path)) {

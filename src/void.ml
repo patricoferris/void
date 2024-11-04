@@ -22,6 +22,12 @@ module Mount = struct
   end
 end
 
+let tmpdir_tmpfs fs =
+  let tmp_path = Filename.temp_dir "void-" "-tmpfs" in
+  let tmpdir = Eio.Path.(fs / tmp_path) in
+  Eio.Path.rmdir tmpdir;
+  tmp_path
+
 external action_mount : unit -> Fork_action.fork_fn = "void_fork_mount"
 
 let action_mount = action_mount ()
@@ -36,8 +42,12 @@ external action_pivot_root : unit -> Fork_action.fork_fn
 
 let action_pivot_root = action_pivot_root ()
 
-let pivot_root (new_root : string) =
-  Fork_action.{ run = (fun k -> k (Obj.repr (action_pivot_root, new_root))) }
+let pivot_root (new_root : string) (mount_as_tmpfs : bool) =
+  Fork_action.
+    {
+      run =
+        (fun k -> k (Obj.repr (action_pivot_root, new_root, mount_as_tmpfs)));
+    }
 
 module Flags = struct
   include Config.Clone_flags
@@ -96,31 +106,35 @@ and mount = { src : string; tgt : string; mode : mode }
 
 let empty = { args = []; rootfs = None; mounts = [] }
 
-let actions v : Fork_action.t list =
+let actions fs v : Fork_action.t list =
   let mounts =
     List.map
       (fun { src; tgt; mode = _ } ->
         mount ~src ~target:tgt Mount.Types.auto Mount.Flags.ms_bind)
       v.mounts
   in
-  let root, _mode =
-    match v.rootfs with None -> failwith "TMPFS" | Some (s, m) -> (s, m)
+  let root, mount_as_tmpfs, _mode =
+    match v.rootfs with
+    | None ->
+        let tmppath = tmpdir_tmpfs fs in
+        (tmppath, true, R)
+    | Some (s, m) -> (s, false, m)
   in
   let args = match v.args with [] -> failwith "No exec" | args -> args in
   let e =
     Process.Fork_action.execve (List.hd args) ~env:[||]
       ~argv:(Array.of_list args)
   in
-  mounts @ [ pivot_root root; e ]
+  mounts @ [ pivot_root root mount_as_tmpfs; e ]
 
 let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
 let exec args v = { v with args }
 let mount ~mode ~src ~tgt v = { v with mounts = { src; tgt; mode } :: v.mounts }
 
-let spawn ~sw e =
+let spawn ~sw ~fs e =
   Switch.run ~name:"spawn_pipe" @@ fun pipe_sw ->
   let errors_r, errors_w = Eio_linux.Low_level.pipe ~sw:pipe_sw in
-  Eio_unix.Private.Fork_action.with_actions (actions e) @@ fun c_actions ->
+  Eio_unix.Private.Fork_action.with_actions (actions fs e) @@ fun c_actions ->
   Switch.check sw;
   let exit_status, set_exit_status = Promise.create () in
   let t =
