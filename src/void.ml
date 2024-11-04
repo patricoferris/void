@@ -49,6 +49,18 @@ let pivot_root (new_root : string) (mount_as_tmpfs : bool) =
         (fun k -> k (Obj.repr (action_pivot_root, new_root, mount_as_tmpfs)));
     }
 
+external action_map_uid_gid : unit -> Fork_action.fork_fn
+  = "void_fork_map_uid_gid"
+
+let action_map_uid_gid = action_map_uid_gid ()
+
+let map_uid_gid ~uid ~gid =
+  Fork_action.
+    {
+      run =
+        (fun k -> k (Obj.repr (action_map_uid_gid, uid, gid)));
+    }
+
 module Flags = struct
   include Config.Clone_flags
 
@@ -125,7 +137,10 @@ let actions fs v : Fork_action.t list =
     Process.Fork_action.execve (List.hd args) ~env:[||]
       ~argv:(Array.of_list args)
   in
-  mounts @ [ pivot_root root mount_as_tmpfs; e ]
+  let mounts = pivot_root root mount_as_tmpfs :: mounts in
+  let uid, gid = Unix.(getuid (), getgid ()) in
+  let user_namespace = map_uid_gid ~uid ~gid in
+  user_namespace :: mounts @ [ e ]
 
 let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
 let exec args v = { v with args }

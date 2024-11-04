@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
 #include <linux/sched.h>
 
 #include <sys/stat.h>
@@ -106,6 +107,59 @@ CAMLprim value void_fork_mount(value v_unit) {
   return Val_fork_fn(action_mount);
 }
 
+// Writes a single line to a file
+static int put_line(const char *filename, const char *line) {
+  int fd;
+  int written;
+
+  fd = open(filename, O_WRONLY | O_CLOEXEC | O_CREAT | O_TRUNC, 0644);
+  
+  if (fd < 0) {
+    return fd;
+  }
+
+  written = write(fd, line, strlen(line));
+
+  close(fd);
+
+  if (written != strlen(line)) {
+     return -1;
+  }
+
+  return 0;
+}
+
+// MAP UID/GID
+static void action_map_uid_gid(int errors, value v_config) {
+  value v_uid = Field(v_config, 1);
+  value v_gid = Field(v_config, 2);
+  int result;
+  char uid_line[30];
+  char gid_line[30];
+
+  // We map root onto the calling UID
+  snprintf(uid_line, sizeof(uid_line), "0 %i 1\n", Int_val(v_uid));
+  result = put_line("/proc/self/uid_map", uid_line);
+  
+  if (result == 0) {
+    eio_unix_fork_error(errors, uid_line, strerror(errno));
+    _exit(1);
+  }
+
+  result = snprintf(gid_line, sizeof(gid_line), "0 %i 1\n", Int_val(v_gid));
+  put_line("/proc/self/gid_map", gid_line);
+
+  if (result < 0) {
+    eio_unix_fork_error(errors, "map_uid_gid-gid", strerror(errno));
+    _exit(1);
+  }
+}
+
+
+CAMLprim value void_fork_map_uid_gid(value v_unit) {
+  return Val_fork_fn(action_map_uid_gid);
+}
+
 // PIVOT ROOT
 //
 static int pivot_root(const char *new_root, const char *put_old) {
@@ -135,7 +189,7 @@ static void action_pivot_root(int errors, value v_config) {
       _exit(1);
     }
 
-    if (mount("tmpfs", new_root, "tmpfs", 0, NULL) == -1) {
+    if (mount("tmpfs", new_root, "tmpfs", 0, "size=500M,mode=700") == -1) {
       eio_unix_fork_error(errors, "pivot_root-tmpfs", strerror(errno));
       _exit(1);
     }
