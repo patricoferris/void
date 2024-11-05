@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
 #include <linux/sched.h>
 
 #include <sys/stat.h>
@@ -106,6 +107,75 @@ CAMLprim value void_fork_mount(value v_unit) {
   return Val_fork_fn(action_mount);
 }
 
+// Writes a single line to a file
+static int put_line(const char *filename, const char *line) {
+  int fd;
+  int written;
+
+  fd = open(filename, O_WRONLY | O_CLOEXEC | O_CREAT | O_TRUNC, 0644);
+  
+  if (fd < 0) {
+    return fd;
+  }
+
+  written = write(fd, line, strlen(line));
+
+  close(fd);
+
+  if (written != strlen(line)) {
+     return -1;
+  }
+
+  return 0;
+}
+
+// MAP UID/GID to root
+static void action_map_uid_gid(int errors, value v_config) {
+  value v_uid = Field(v_config, 1);
+  value v_gid = Field(v_config, 2);
+  int result;
+  char uid_line[30];
+  char gid_line[30];
+
+  // We map root onto the calling UID
+  snprintf(uid_line, sizeof(uid_line), "0 %i 1\n", Int_val(v_uid));
+  result = put_line("/proc/self/uid_map", uid_line);
+  
+  if (result < 0) {
+    eio_unix_fork_error(errors, "map_uid_gid-uid", strerror(errno));
+    _exit(1);
+  }
+
+  /* From user_namespaces(7)
+   *
+   * Writing "deny" to the /proc/pid/setgroups file before writing to
+   * /proc/pid/gid_map will permanently disable setgroups(2) in a user
+   * namespace and allow writing to /proc/pid/gid_map without having
+   * the CAP_SETGID capability in the parent user namespace.
+   *
+   * See also: https://lwn.net/Articles/626665/ */
+  
+  put_line("/proc/self/setgroups", "deny\n");
+
+  if (result < 0) {
+    eio_unix_fork_error(errors, "map_uid_gid-setgroups", strerror(errno));
+    _exit(1);
+  }
+
+  result = snprintf(gid_line, sizeof(gid_line), "0 %i 1\n", Int_val(v_gid));
+  put_line("/proc/self/gid_map", gid_line);
+
+  if (result < 0) {
+    eio_unix_fork_error(errors, "map_uid_gid-gid", strerror(errno));
+    _exit(1);
+  }
+}
+
+
+CAMLprim value void_fork_map_uid_gid(value v_unit) {
+  return Val_fork_fn(action_map_uid_gid);
+}
+
 // PIVOT ROOT
 //
 static int pivot_root(const char *new_root, const char *put_old) {
@@ -116,45 +186,101 @@ static int pivot_root(const char *new_root, const char *put_old) {
 static void action_pivot_root(int errors, value v_config) {
   char path[PATH_MAX];
   value v_new_root = Field(v_config, 1);
-  const char *old_root = "/old_root";
-
+  value v_mount_as_tmpfs = Field(v_config, 2);
+  value v_mounts = Field(v_config, 3);
+  char old_root_path[PATH_MAX];
+  const char *put_old = ".old_root";
   const char *new_root = String_val(v_new_root);
 
   // From pivot_root example: We want to change the propagation type
   // of root to be private so we can pivot it.
   if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) {
     eio_unix_fork_error(errors, "pivot_root-private", strerror(errno));
-	_exit(1);
+    _exit(1);
+  }
+
+  // If no pivot_root was given, then we tmpfs the tmpdir we assume was passed.
+  if (Val_bool(v_mount_as_tmpfs)) {
+    if (mkdir(new_root, 0777) == -1) {
+      eio_unix_fork_error(errors, "tmpfs-code", strerror(errno));
+      _exit(1);
+    }
+
+    if (mount("tmpfs", new_root, "tmpfs", 0, NULL) <= -1) {
+      eio_unix_fork_error(errors, "pivot_root-tmpfs", strerror(errno));
+      _exit(1);
+    }
   }
 
   // From pivot_root example: we check that new_root is indeed a mountpoint 
-  if (mount(new_root, new_root, NULL, MS_BIND, NULL) == -1) {
+  if (mount(new_root, new_root, NULL, MS_BIND, NULL) <= -1) {
     eio_unix_fork_error(errors, "pivot_root-new_root", strerror(errno));
     _exit(1);
   }
 
-   // Create the old_root path 
-   snprintf(path, sizeof(path), "%s/%s", new_root, old_root);
-   if (mkdir(path, 0777) == -1) {
-     eio_unix_fork_error(errors, "pivot_root-path", strerror(errno));
-	 _exit(1);
-   }
+  // Make the place to pivot the old root too, under the new root
+  snprintf(old_root_path, sizeof(path), "%s/%s", new_root, put_old);
+ 
+  if (mkdir(old_root_path, 0777) == -1) {
+    eio_unix_fork_error(errors, "pivot_root-mkdir-put_old", strerror(errno));
+    _exit(1);
+  }
 
-  // Pivot the root! 
-  if (pivot_root(new_root, path)) {
+  // Pivot the root
+  if (pivot_root(new_root, old_root_path)) {
     eio_unix_fork_error(errors, "pivot_root", strerror(errno));
-	_exit(1);
+    _exit(1);
   }
 
+  // Add mounts
+  value current_mount = v_mounts;
+  int mount_result;
+  while(current_mount != Val_emptylist) {
+    // TODO: Mode for mounting
+
+    if(mkdir(String_val(Field(Field(current_mount, 0), 1)), 0777) == -1) {
+      eio_unix_fork_error(errors, "pivot_root-mkdir-mount", strerror(errno));
+      _exit(1);
+    }
+
+    mount_result = mount(
+      String_val(Field(Field(current_mount, 0), 0)),
+      String_val(Field(Field(current_mount, 0), 1)),
+      NULL,
+      MS_REC | MS_BIND,
+      NULL
+    );
+
+    // Fail early if a mount fails...
+    if (mount_result < 0) {
+      char error[PATH_MAX];
+      snprintf(error, sizeof(error), "mount failed: (%s->%s)",
+		      String_val(Field(Field(current_mount, 0), 0)),
+                      String_val(Field(Field(current_mount, 0), 1)));
+      eio_unix_fork_error(errors, error, strerror(errno));
+      _exit(1);
+    }
+
+    // Next mount in the list
+    current_mount = Field(current_mount, 1);
+  }
+
+  // Change to the 'new' root
+  if (chdir("/") == -1) {
+    eio_unix_fork_error(errors, "pivot_root-chdir", strerror(errno));
+    _exit(1);
+  }
+  
   // Unmount the old root and remove it
-  if (umount2(old_root, MNT_DETACH) == -1) {
-    eio_unix_fork_error(errors, "pivot_root-detach", strerror(errno));
-	_exit(1);
+  if (umount2(put_old, MNT_DETACH) == -1) {
+    eio_unix_fork_error(errors, put_old, strerror(errno));
+    _exit(1);
   }
 
-  if (rmdir(old_root) == -1) {
-    eio_unix_fork_error(errors, "pivot_root-rmdir", strerror(errno));
-	_exit(1);
+  // Remove the old root
+  if (rmdir(put_old) == -1) {
+    eio_unix_fork_error(errors, put_old, strerror(errno));
+    _exit(1);
   }
 }
 
