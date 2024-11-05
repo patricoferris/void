@@ -1,6 +1,6 @@
 open Eio.Std
 
-let root_filesystem =
+let _root_filesystem =
   "/obuilder-zfs/result/fe532e693c6a86db16b50547aae1345b3515c727b8ed668b3e0c33c1e9a895f9/rootfs"
 
 let () =
@@ -9,9 +9,8 @@ let () =
   let open Void in
   let void =
     empty
-    (*  |> rootfs ~mode:R root_filesystem
-    *)
-    |> exec [ "/usr/bin/curl"; "https//ryan.freumh.org" ]
+    |> mount ~mode:R ~src:"/tmp/test" ~tgt:"bin"
+    |> exec [ "/bin/busybox"; "ls" ]
   in
   let t = Void.spawn ~sw ~fs:env#fs void in
   match Promise.await (Void.exit_status t) with

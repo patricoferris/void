@@ -5,6 +5,16 @@ module Fd = Eio_unix.Fd
 module Rcfd = Eio_unix.Private.Rcfd
 module Fork_action = Eio_unix.Private.Fork_action
 
+type mode = R | RW
+
+type void = {
+  args : string list;
+  rootfs : (string * mode) option;
+  mounts : mount list;
+}
+
+and mount = { src : string; tgt : string; mode : mode [@warning "-69"] }
+
 (* Actions for namespacing *)
 module Mount = struct
   module Flags = struct
@@ -24,15 +34,16 @@ end
 
 let tmpdir_tmpfs fs =
   let tmp_path = Filename.temp_dir "void-" "-tmpfs" in
-  let tmpdir = Eio.Path.(fs / tmp_path) in
-  Eio.Path.rmdir tmpdir;
+  (* We let the process make this directory to avoid
+     cluttering the parent namespace *)
+  Eio.Path.(rmdir (fs / tmp_path));
   tmp_path
 
 external action_mount : unit -> Fork_action.fork_fn = "void_fork_mount"
 
 let action_mount = action_mount ()
 
-let mount ~(src : string) ~(target : string) (type_ : Mount.Types.t)
+let _mount ~(src : string) ~(target : string) (type_ : Mount.Types.t)
     (flags : Mount.Flags.t) =
   Fork_action.
     { run = (fun k -> k (Obj.repr (action_mount, src, target, type_, flags))) }
@@ -42,11 +53,13 @@ external action_pivot_root : unit -> Fork_action.fork_fn
 
 let action_pivot_root = action_pivot_root ()
 
-let pivot_root (new_root : string) (mount_as_tmpfs : bool) =
+let pivot_root (new_root : string) (mount_as_tmpfs : bool) (mounts : mount list)
+    =
   Fork_action.
     {
       run =
-        (fun k -> k (Obj.repr (action_pivot_root, new_root, mount_as_tmpfs)));
+        (fun k ->
+          k (Obj.repr (action_pivot_root, new_root, mount_as_tmpfs, mounts)));
     }
 
 external action_map_uid_gid : unit -> Fork_action.fork_fn
@@ -55,11 +68,7 @@ external action_map_uid_gid : unit -> Fork_action.fork_fn
 let action_map_uid_gid = action_map_uid_gid ()
 
 let map_uid_gid ~uid ~gid =
-  Fork_action.
-    {
-      run =
-        (fun k -> k (Obj.repr (action_map_uid_gid, uid, gid)));
-    }
+  Fork_action.{ run = (fun k -> k (Obj.repr (action_map_uid_gid, uid, gid))) }
 
 module Flags = struct
   include Config.Clone_flags
@@ -106,25 +115,10 @@ let rec waitpid pid =
 let void_flags = List.fold_left Flags.( + ) 0 Flags.all
 
 type path = string
-type mode = R | RW
-
-type void = {
-  args : string list;
-  rootfs : (string * mode) option;
-  mounts : mount list;
-}
-
-and mount = { src : string; tgt : string; mode : mode }
 
 let empty = { args = []; rootfs = None; mounts = [] }
 
 let actions fs v : Fork_action.t list =
-  let mounts =
-    List.map
-      (fun { src; tgt; mode = _ } ->
-        mount ~src ~target:tgt Mount.Types.auto Mount.Flags.ms_bind)
-      v.mounts
-  in
   let root, mount_as_tmpfs, _mode =
     match v.rootfs with
     | None ->
@@ -137,10 +131,19 @@ let actions fs v : Fork_action.t list =
     Process.Fork_action.execve (List.hd args) ~env:[||]
       ~argv:(Array.of_list args)
   in
-  let mounts = pivot_root root mount_as_tmpfs :: mounts in
+  (* Process mount point points *)
+  let mounts =
+    List.map
+      (fun mnt ->
+        let src = Filename.concat "/.old_root" mnt.src in
+        let tgt = Filename.concat "/" mnt.tgt in
+        { mnt with tgt; src })
+      v.mounts
+  in
+  let mounts = pivot_root root mount_as_tmpfs mounts in
   let uid, gid = Unix.(getuid (), getgid ()) in
   let user_namespace = map_uid_gid ~uid ~gid in
-  user_namespace :: mounts @ [ e ]
+  [ user_namespace; mounts; e ]
 
 let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
 let exec args v = { v with args }

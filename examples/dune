@@ -1,0 +1,3 @@
+(executables
+ (names busybox)
+ (libraries void eio_main))
