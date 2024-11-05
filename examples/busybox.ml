@@ -28,6 +28,6 @@ let () =
     |> mount ~mode:R ~src:busybox_dir ~tgt:"bin"
     |> exec [ "/bin/busybox"; "ls"; "-la" ]
   in
-  let t = Void.spawn ~sw ~fs:env#fs void in
+  let t = Void.spawn ~sw ~fs void in
   let status = Promise.await (Void.exit_status t) in
   Eio.traceln "Status: %s" (Void.exit_status_to_string status)

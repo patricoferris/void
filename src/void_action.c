@@ -200,7 +200,7 @@ static void action_pivot_root(int errors, value v_config) {
   }
 
   // If no pivot_root was given, then we tmpfs the tmpdir we assume was passed.
-  if (Val_bool(v_mount_as_tmpfs)) {
+  if (Val_bool(v_mount_as_tmpfs) == 1) {
     if (mkdir(new_root, 0777) == -1) {
       eio_unix_fork_error(errors, "tmpfs-code", strerror(errno));
       _exit(1);
