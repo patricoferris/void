@@ -17,7 +17,7 @@ let copy_busybox ~fs ~proc =
 (* This example read-only mounts a copy of busybox
    into the root-filesystem of the process. *)
 let () =
-  Eio_linux.run @@ fun env ->
+  Eio_posix.run @@ fun env ->
   Switch.run @@ fun sw ->
   let fs = env#fs in
   let proc = env#process_mgr in

@@ -29,6 +29,10 @@
 // From Eio
 #include <include/fork_action.h>
 
+#ifndef SYS_pidfd_send_signal
+# define SYS_pidfd_send_signal 424
+#endif
+
 // struct clone_args isn't defined in linux-lts headers, so define it here
 // Note that this struct is versioned by size. See linux/sched.h for details
 struct caml_void_clone_args {
@@ -41,6 +45,19 @@ struct caml_void_clone_args {
   uint64_t stack_size;
   uint64_t tls;
 };
+
+static int pidfd_send_signal(int pidfd, int sig, siginfo_t *info, unsigned int flags) {
+  return syscall(SYS_pidfd_send_signal, pidfd, sig, info, flags);
+}
+
+CAMLprim value caml_void_pidfd_send_signal(value v_pidfd, value v_signal) {
+  CAMLparam0();
+  int res;
+
+  res = pidfd_send_signal(Int_val(v_pidfd), caml_convert_signal_number(Int_val(v_signal)), NULL, 0);
+  if (res == -1) uerror("pidfd_send_signal", Nothing);
+  CAMLreturn(Val_unit);
+}
 
 static pid_t clone3_no_fallback(struct caml_void_clone_args *cl_args) {
   int *pidfd = (int *)(uintptr_t) cl_args->pidfd;
@@ -185,18 +202,12 @@ static int pivot_root(const char *new_root, const char *put_old) {
 // Is there too much OCaml stuff going on here for a fork_action ?
 static void action_pivot_root(int errors, value v_config) {
   value v_new_root = Field(v_config, 1);
-  value v_mounts = Field(v_config, 2);
+  value v_no_root = Field(v_config, 2);
+  value v_mounts = Field(v_config, 3);
   char path[PATH_MAX];
   char old_root_path[PATH_MAX];
-  char *new_root;
+  char *new_root = String_val(v_new_root);
   const char *put_old = ".old_root";
-
-  // Set new root if one has not been provided
-  if (Is_none(v_new_root)) {
-    new_root = "/tmp/void-tmpfs-XXXXXX";
-  } else {
-    new_root = String_val(Some_val(v_new_root));
-  }
 
   // From pivot_root example: We want to change the propagation type
   // of root to be private so we can pivot it.
@@ -206,12 +217,12 @@ static void action_pivot_root(int errors, value v_config) {
   }
 
   // If no pivot_root was given, then we tmpfs the tmpdir we assume was passed.
-  if (Is_none(v_new_root)) {
-	// Make a temporary directory
-    if (mkdtemp(new_root) == NULL) {
-      eio_unix_fork_error(errors, "tmpfs-code", strerror(errno));
-      _exit(1);
-    }
+  if (Bool_val(v_no_root)) {
+    // Make a temporary directory... can't because it allocates ?
+    //if (mkdtemp(new_root) != NULL) {
+    //  eio_unix_fork_error(errors, new_root, strerror(errno));
+    //  _exit(1);
+    //}
 
     if (mount("tmpfs", new_root, "tmpfs", 0, NULL) <= -1) {
       eio_unix_fork_error(errors, "pivot_root-tmpfs", strerror(errno));

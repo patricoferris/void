@@ -46,9 +46,11 @@ external action_pivot_root : unit -> Fork_action.fork_fn
 
 let action_pivot_root = action_pivot_root ()
 
-let pivot_root (new_root : string option) (mounts : mount list) =
+let pivot_root (new_root : string) (tmpfs : bool) (mounts : mount list) =
   Fork_action.
-    { run = (fun k -> k (Obj.repr (action_pivot_root, new_root, mounts))) }
+    {
+      run = (fun k -> k (Obj.repr (action_pivot_root, new_root, tmpfs, mounts)));
+    }
 
 external action_map_uid_gid : unit -> Fork_action.fork_fn
   = "void_fork_map_uid_gid"
@@ -72,7 +74,7 @@ external eio_spawn :
 
 type t = {
   pid : int;
-  lock : Mutex.t;
+  pid_fd : Fd.t;
   exit_status : Unix.process_status Promise.t;
 }
 
@@ -83,8 +85,8 @@ let pid t = t.pid
 let rec read_response fd =
   let buf = Cstruct.create 256 in
   match Eio_posix.Low_level.readv fd [| buf |] with
+  | 0 | (exception End_of_file) -> ""
   | len -> Cstruct.to_string buf ~len ^ read_response fd
-  | exception End_of_file -> ""
 
 let void_flags = List.fold_left Flags.( + ) 0 Flags.all
 
@@ -93,8 +95,10 @@ type path = string
 let empty = { args = []; rootfs = None; mounts = [] }
 
 let actions v : Fork_action.t list =
-  let root, _mode =
-    match v.rootfs with None -> (None, R) | Some (s, m) -> (Some s, m)
+  let root, tmpfs, _mode =
+    match v.rootfs with
+    | None -> (Filename.temp_dir "void-" "-tmpdir", true, R)
+    | Some (s, m) -> (s, false, m)
   in
   let args = match v.args with [] -> failwith "No exec" | args -> args in
   let e =
@@ -110,7 +114,7 @@ let actions v : Fork_action.t list =
         { mnt with tgt; src })
       v.mounts
   in
-  let mounts = pivot_root root mounts in
+  let mounts = pivot_root root tmpfs mounts in
   let uid, gid = Unix.(getuid (), getgid ()) in
   let user_namespace = map_uid_gid ~uid ~gid in
   [ user_namespace; mounts; e ]
@@ -119,32 +123,25 @@ let rootfs ~mode path v = { v with rootfs = Some (path, mode) }
 let exec args v = { v with args }
 let mount ~mode ~src ~tgt v = { v with mounts = { src; tgt; mode } :: v.mounts }
 
-(* From eio_posix *)
+(* From eio_linux/eio_posix *)
 let with_pipe fn =
   Switch.run @@ fun sw ->
   let r, w = Eio_posix.Low_level.pipe ~sw in
   fn r w
 
-let signal t signal =
-  (* We need the lock here so that one domain can't signal the process exactly as another is reaping it. *)
-  Mutex.lock t.lock;
-  Fun.protect ~finally:(fun () -> Mutex.unlock t.lock) @@ fun () ->
-  if not (Promise.is_resolved t.exit_status) then Unix.kill t.pid signal
-(* else process has been reaped and t.pid is invalid *)
+external pidfd_send_signal : Unix.file_descr -> int -> unit
+  = "caml_void_pidfd_send_signal"
 
-(* Wait for [pid] to exit and then resolve [exit_status] to its status. *)
-let reap t exit_status =
-  Eio.Condition.loop_no_mutex Eio_unix.Process.sigchld (fun () ->
-      Mutex.lock t.lock;
-      match Unix.waitpid [ WNOHANG ] t.pid with
-      | 0, _ ->
-          Mutex.unlock t.lock;
-          None (* Not ready; wait for next SIGCHLD *)
-      | p, status ->
-          assert (p = t.pid);
-          Promise.resolve exit_status status;
-          Mutex.unlock t.lock;
-          Some ())
+let signal t signum =
+  Fd.use t.pid_fd ~if_closed:Fun.id @@ fun pid_fd ->
+  pidfd_send_signal pid_fd signum
+
+let rec waitpid pid =
+  match Unix.waitpid [] pid with
+  | p, status ->
+      assert (p = pid);
+      status
+  | exception Unix.Unix_error (EINTR, _, _) -> waitpid pid
 
 let spawn ~sw v =
   with_pipe @@ fun errors_r errors_w ->
@@ -152,29 +149,30 @@ let spawn ~sw v =
   Switch.check sw;
   let exit_status, set_exit_status = Promise.create () in
   let t =
-    let pid, _pid_fd =
+    let pid, pid_fd =
       Fd.use_exn "errors-w" errors_w @@ fun errors_w ->
       Eio.Private.Trace.with_span "spawn" @@ fun () ->
       let flags = Flags.(clone_pidfd + void_flags) in
       eio_spawn errors_w flags c_actions
     in
-    { pid; exit_status; lock = Mutex.create () }
+    let pid_fd = Fd.of_unix ~sw ~seekable:false ~close_unix:true pid_fd in
+    { pid; pid_fd; exit_status }
   in
   Fd.close errors_w;
-  let hook =
-    Switch.on_release_cancellable sw (fun () ->
-        (* Kill process (if still running) *)
-        signal t Sys.sigkill;
-        (* The switch is being released, so either the daemon fiber got
-           cancelled or it hasn't started yet (and never will start). *)
-        if not (Promise.is_resolved t.exit_status) then
-          (* Do a (non-cancellable) waitpid here to reap the child. *)
-          reap t set_exit_status)
-  in
   Fiber.fork_daemon ~sw (fun () ->
-      reap t set_exit_status;
-      Switch.remove_hook hook;
-      `Stop_daemon);
+      let cleanup () =
+        Fd.close t.pid_fd;
+        Promise.resolve set_exit_status (waitpid t.pid);
+        `Stop_daemon
+      in
+      match Eio_posix.Low_level.await_readable "void_spawn" t.pid_fd with
+      | () -> Eio.Cancel.protect cleanup
+      | exception Eio.Cancel.Cancelled _ ->
+          Eio.Cancel.protect (fun () ->
+              Printf.eprintf "Cancelled?";
+              signal t Sys.sigkill;
+              Eio_posix.Low_level.await_readable "void_spawn" t.pid_fd;
+              cleanup ()));
   (* Check for errors starting the process. *)
   match read_response errors_r with
   | "" -> t (* Success! Execing the child closed [errors_w] and we got EOF. *)
