@@ -217,12 +217,12 @@ static void action_pivot_root(int errors, value v_config) {
       eio_unix_fork_error(errors, "pivot_root-tmpfs", strerror(errno));
       _exit(1);
     }
-  }
-
-  // From pivot_root example: we check that new_root is indeed a mountpoint 
-  if (mount(new_root, new_root, NULL, MS_BIND, NULL) <= -1) {
-    eio_unix_fork_error(errors, "pivot_root-new_root", strerror(errno));
-    _exit(1);
+  } else {
+	// From pivot_root example: we check that new_root is indeed a mountpoint 
+	if (mount(new_root, new_root, NULL, MS_BIND, NULL) <= -1) {
+  	  eio_unix_fork_error(errors, "pivot_root-new_root", strerror(errno));
+  	  _exit(1);
+	}
   }
 
   // Make the place to pivot the old root too, under the new root
