@@ -10,4 +10,4 @@
   (language c)
   (flags -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64)
   (names void_action))
- (libraries eio_linux eio.unix))
+ (libraries eio_posix eio.unix))

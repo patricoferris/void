@@ -48,7 +48,7 @@ val mount : mode:mode -> src:path -> tgt:path -> void -> void
 val exec : string list -> void -> void
 (** Make a void configuration ready to be spawned *)
 
-val spawn : sw:Eio.Switch.t -> fs:_ Eio.Path.t -> void -> t
+val spawn : sw:Eio.Switch.t -> void -> t
 (** Spawn a void process *)
 
 val pid : t -> int

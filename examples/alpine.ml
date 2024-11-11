@@ -45,6 +45,6 @@ let () =
   let alpine_img = get_alpine_image ~fs ~proc in
   let open Void in
   let void = empty |> rootfs ~mode:R alpine_img |> exec [ "/bin/ls"; "-la" ] in
-  let t = Void.spawn ~sw ~fs void in
+  let t = Void.spawn ~sw void in
   let status = Promise.await (Void.exit_status t) in
   Eio.traceln "Status: %s" (Void.exit_status_to_string status)

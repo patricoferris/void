@@ -22,7 +22,7 @@
  (depends 
    ocaml 
    dune
-   eio_linux)
+   eio_posix)
  (tags
   (linux process spawn)))
 

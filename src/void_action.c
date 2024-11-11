@@ -181,16 +181,22 @@ CAMLprim value void_fork_map_uid_gid(value v_unit) {
 static int pivot_root(const char *new_root, const char *put_old) {
   return syscall(SYS_pivot_root, new_root, put_old);
 }
-// The calling function must ensure:
-//   - old_root is created inside 
+
+// Is there too much OCaml stuff going on here for a fork_action ?
 static void action_pivot_root(int errors, value v_config) {
-  char path[PATH_MAX];
   value v_new_root = Field(v_config, 1);
-  value v_mount_as_tmpfs = Field(v_config, 2);
-  value v_mounts = Field(v_config, 3);
+  value v_mounts = Field(v_config, 2);
+  char path[PATH_MAX];
   char old_root_path[PATH_MAX];
+  char *new_root;
   const char *put_old = ".old_root";
-  const char *new_root = String_val(v_new_root);
+
+  // Set new root if one has not been provided
+  if (Is_none(v_new_root)) {
+    new_root = "/tmp/void-tmpfs-XXXXXX";
+  } else {
+    new_root = String_val(Some_val(v_new_root));
+  }
 
   // From pivot_root example: We want to change the propagation type
   // of root to be private so we can pivot it.
@@ -200,8 +206,9 @@ static void action_pivot_root(int errors, value v_config) {
   }
 
   // If no pivot_root was given, then we tmpfs the tmpdir we assume was passed.
-  if (Val_bool(v_mount_as_tmpfs) == 1) {
-    if (mkdir(new_root, 0777) == -1) {
+  if (Is_none(v_new_root)) {
+	// Make a temporary directory
+    if (mkdtemp(new_root) == NULL) {
       eio_unix_fork_error(errors, "tmpfs-code", strerror(errno));
       _exit(1);
     }
